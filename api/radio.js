@@ -11,7 +11,7 @@ export default async function handler(req, res) {
 
   try {
     // =========================
-    // 1. Lấy ngày Việt Nam
+    // 1. Ngày Việt Nam
     // =========================
     const now = new Date();
     const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
@@ -70,8 +70,10 @@ export default async function handler(req, res) {
 
     const masterUrl = current.link_play;
 
+    console.log('THVL master:', masterUrl);
+
     // =========================
-    // 4. Tải master M3U8
+    // 4. Lấy master M3U8
     // =========================
     const masterResponse = await fetch(masterUrl, {
       method: 'GET',
@@ -86,81 +88,53 @@ export default async function handler(req, res) {
     if (!masterResponse.ok) {
       return res.status(502).json({
         success: false,
-        error: `THVL M3U8 returned ${masterResponse.status}`,
+        error: `Master M3U8 returned ${masterResponse.status}`,
         master_url: masterUrl,
       });
     }
 
     const masterText = await masterResponse.text();
 
+    console.log('Master M3U8:', masterText);
+
     // =========================
-    // 5. Phân tích master playlist
+    // 5. Tìm media playlist
     // =========================
     const lines = masterText
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean);
 
-    let mediaUrl = null;
+    let mediaPath = null;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      // Bỏ qua comment / metadata
-      if (line.startsWith('#')) {
-        continue;
-      }
-
-      // Dòng đầu tiên không phải comment
-      // sau EXT-X-STREAM-INF chính là media playlist
-      if (line.endsWith('.m3u8')) {
-        mediaUrl = new URL(line, masterUrl).toString();
+    for (const line of lines) {
+      if (
+        !line.startsWith('#') &&
+        line.toLowerCase().includes('.m3u8')
+      ) {
+        mediaPath = line;
         break;
       }
     }
 
-    if (!mediaUrl) {
+    if (!mediaPath) {
       return res.status(502).json({
         success: false,
-        error: 'Không tìm thấy media playlist trong master M3U8',
+        error: 'Không tìm thấy media playlist',
         master_url: masterUrl,
-        playlist: masterText,
       });
     }
 
     // =========================
-    // 6. Kiểm tra media playlist
+    // 6. Chuyển relative URL
+    //    thành absolute URL
     // =========================
-    const mediaResponse = await fetch(mediaUrl, {
-      method: 'GET',
-      headers: {
-        Accept: '*/*',
-        'User-Agent': 'Mozilla/5.0',
-        Referer: 'https://thvli.vn/',
-      },
-      cache: 'no-store',
-    });
+    const mediaUrl = new URL(mediaPath, masterUrl).toString();
 
-    if (!mediaResponse.ok) {
-      return res.status(502).json({
-        success: false,
-        error: `THVL media playlist returned ${mediaResponse.status}`,
-        media_url: mediaUrl,
-      });
-    }
-
-    const mediaText = await mediaResponse.text();
-
-    if (!mediaText.includes('#EXTM3U')) {
-      return res.status(502).json({
-        success: false,
-        error: 'Media playlist không hợp lệ',
-        media_url: mediaUrl,
-      });
-    }
+    console.log('THVL media:', mediaUrl);
 
     // =========================
-    // 7. Trả media playlist
+    // 7. Trả kết quả
     // =========================
     return res.status(200).json({
       success: true,
