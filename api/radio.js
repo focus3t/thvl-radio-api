@@ -10,39 +10,49 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Việt Nam = UTC+7
     const now = new Date();
     const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
     const date = vn.toISOString().slice(0, 10);
 
-    const url =
-      `${THVL_API}/${THVL_ID}/?play-date=${date}`;
+    const url = `${THVL_API}/${THVL_ID}/?play-date=${date}`;
 
     const response = await fetch(url, {
+      method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'THVL-Radio-ESP32/1.0',
+        'User-Agent': 'Mozilla/5.0',
+        Referer: 'https://thvli.vn/',
       },
       cache: 'no-store',
     });
 
-    if (!response.ok) {
+    const text = await response.text();
+
+    let json;
+
+    try {
+      json = JSON.parse(text);
+    } catch {
       return res.status(502).json({
         success: false,
-        error: `THVL API returned ${response.status}`,
+        error: 'THVL API trả về dữ liệu không phải JSON',
+        status: response.status,
+        raw: text.substring(0, 2000),
       });
     }
 
-    const json = await response.json();
-
     const hlsUrl =
       json?.data?.play_info?.data?.hls_link_play ||
-      json?.data?.link_play;
+      json?.data?.link_play ||
+      json?.data?.play_info?.hls_link_play;
 
     if (!hlsUrl) {
       return res.status(502).json({
         success: false,
         error: 'THVL API không trả về HLS URL',
+        date,
+        status: response.status,
+        thvl: json,
       });
     }
 
@@ -50,7 +60,6 @@ export default async function handler(req, res) {
       success: true,
       url: hlsUrl,
       date,
-      expires: json?.data?.gen_time ?? null,
     });
   } catch (error) {
     return res.status(500).json({
