@@ -10,20 +10,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    // =========================
-    // 1. Ngày Việt Nam
-    // =========================
     const now = new Date();
     const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
     const date = vn.toISOString().slice(0, 10);
 
-    // =========================
-    // 2. Lấy EPG THVL
-    // =========================
-    const epgUrl = `${THVL_API}/${THVL_ID}/?play-date=${date}`;
+    const url = `${THVL_API}/${THVL_ID}/?play-date=${date}`;
 
-    const epgResponse = await fetch(epgUrl, {
-      method: 'GET',
+    const response = await fetch(url, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'Mozilla/5.0',
@@ -32,15 +25,15 @@ export default async function handler(req, res) {
       cache: 'no-store',
     });
 
-    if (!epgResponse.ok) {
+    if (!response.ok) {
       return res.status(502).json({
         success: false,
-        error: `THVL API returned ${epgResponse.status}`,
+        error: `THVL API returned ${response.status}`,
       });
     }
 
-    const epg = await epgResponse.json();
-    const items = epg?.data?.items;
+    const json = await response.json();
+    const items = json?.data?.items;
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(502).json({
@@ -49,9 +42,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // =========================
-    // 3. Tìm chương trình hiện tại
-    // =========================
     const nowUnix = Math.floor(Date.now() / 1000);
 
     const current = items.find(item =>
@@ -68,79 +58,10 @@ export default async function handler(req, res) {
       });
     }
 
-    const masterUrl = current.link_play;
-
-    console.log('THVL master:', masterUrl);
-
-    // =========================
-    // 4. Lấy master M3U8
-    // =========================
-    const masterResponse = await fetch(masterUrl, {
-      method: 'GET',
-      headers: {
-        Accept: '*/*',
-        'User-Agent': 'Mozilla/5.0',
-        Referer: 'https://thvli.vn/',
-      },
-      cache: 'no-store',
-    });
-
-    if (!masterResponse.ok) {
-      return res.status(502).json({
-        success: false,
-        error: `Master M3U8 returned ${masterResponse.status}`,
-        master_url: masterUrl,
-      });
-    }
-
-    const masterText = await masterResponse.text();
-
-    console.log('Master M3U8:', masterText);
-
-    // =========================
-    // 5. Tìm media playlist
-    // =========================
-    const lines = masterText
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(Boolean);
-
-    let mediaPath = null;
-
-    for (const line of lines) {
-      if (
-        !line.startsWith('#') &&
-        line.toLowerCase().includes('.m3u8')
-      ) {
-        mediaPath = line;
-        break;
-      }
-    }
-
-    if (!mediaPath) {
-      return res.status(502).json({
-        success: false,
-        error: 'Không tìm thấy media playlist',
-        master_url: masterUrl,
-      });
-    }
-
-    // =========================
-    // 6. Chuyển relative URL
-    //    thành absolute URL
-    // =========================
-    const mediaUrl = new URL(mediaPath, masterUrl).toString();
-
-    console.log('THVL media:', mediaUrl);
-
-    // =========================
-    // 7. Trả kết quả
-    // =========================
     return res.status(200).json({
       success: true,
       title: current.title,
-      url: mediaUrl,
-      master_url: masterUrl,
+      url: current.link_play,
       start_at: current.start_at,
       end_at: current.end_at,
       date,
