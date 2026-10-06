@@ -1,4 +1,3 @@
-```js
 const THVL_ID = '7bf43e25-e9e9-4aa6-8554-38de13c5263d';
 const THVL_API = 'https://api-ott.admon.com.vn/api/tenant/thvli/epg';
 
@@ -182,4 +181,3 @@ export default async function handler(req, res) {
     });
   }
 }
-```
