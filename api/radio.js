@@ -10,6 +10,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Việt Nam UTC+7
     const now = new Date();
     const vn = new Date(now.getTime() + 7 * 60 * 60 * 1000);
     const date = vn.toISOString().slice(0, 10);
@@ -26,39 +27,47 @@ export default async function handler(req, res) {
       cache: 'no-store',
     });
 
-    const text = await response.text();
-
-    let json;
-
-    try {
-      json = JSON.parse(text);
-    } catch {
+    if (!response.ok) {
       return res.status(502).json({
         success: false,
-        error: 'THVL API trả về dữ liệu không phải JSON',
-        status: response.status,
-        raw: text.substring(0, 2000),
+        error: `THVL API returned ${response.status}`,
       });
     }
 
-    const hlsUrl =
-      json?.data?.play_info?.data?.hls_link_play ||
-      json?.data?.link_play ||
-      json?.data?.play_info?.hls_link_play;
+    const json = await response.json();
+    const items = json?.data?.items;
 
-    if (!hlsUrl) {
+    if (!Array.isArray(items) || items.length === 0) {
       return res.status(502).json({
         success: false,
-        error: 'THVL API không trả về HLS URL',
-        date,
-        status: response.status,
-        thvl: json,
+        error: 'THVL không trả về danh sách chương trình',
+      });
+    }
+
+    // Unix timestamp hiện tại
+    const nowUnix = Math.floor(Date.now() / 1000);
+
+    // Tìm chương trình đang phát
+    const current = items.find(item =>
+      item.start_at <= nowUnix &&
+      nowUnix < item.end_at &&
+      item.link_play
+    );
+
+    if (!current) {
+      return res.status(502).json({
+        success: false,
+        error: 'Không tìm thấy chương trình đang phát',
+        timestamp: nowUnix,
       });
     }
 
     return res.status(200).json({
       success: true,
-      url: hlsUrl,
+      title: current.title,
+      url: current.link_play,
+      start_at: current.start_at,
+      end_at: current.end_at,
       date,
     });
   } catch (error) {
