@@ -1,140 +1,144 @@
 export const config = {
-  runtime: 'nodejs', // phải dùng nodejs để stream liên tục được
-  regions: ['sin1'], // để gần VN cho đỡ lag
+  runtime: 'nodejs',
+  regions: ['sin1'],
 };
 
-function getPmtPidFromPat(buf) {
-  for (let i = 0; i < buf.length; i += 188) {
-    if (buf[i]!== 0x47) continue;
-    const pid = ((buf[i+1] & 0x1F) << 8) | buf[i+2];
-    if (pid!== 0) continue;
-    const payloadStart = (buf[i+1] & 0x40)? 5 : 4;
-    const pointer = buf[i+payloadStart];
-    let off = i + payloadStart + 1 + pointer;
-    if (buf[off]!== 0x00) continue; // table_id PAT
-    const sectionLen = ((buf[off+1] & 0x0F) << 8) | buf[off+2];
-    for (let j = off+8; j < off+3+sectionLen-4; j+=4) {
-      const program = (buf[j] << 8) | buf[j+1];
-      const pmtPid = ((buf[j+2] & 0x1F) << 8) | buf[j+3];
-      if (program!== 0) return pmtPid;
+// ---- TS Parser chuẩn ----
+function getPid(buf, i) { return ((buf[i+1] & 0x1F) << 8) | buf[i+2]; }
+function hasPayload(buf, i) { return (buf[i+3] & 0x10)!== 0; }
+function getPayloadOffset(buf, i) {
+  const adapt = (buf[i+3] >> 4) & 0x03; // 1=payload only, 2=adapt only, 3=both
+  if (adapt === 2) return -1;
+  let off = 4;
+  if (adapt === 3) {
+    const adapLen = buf[i+4];
+    off += 1 + adapLen;
+  }
+  return off;
+}
+
+function findPmtPid(tsBuf) {
+  for (let i = 0; i + 188 <= tsBuf.length; i += 188) {
+    if (tsBuf[i]!== 0x47) continue;
+    if (getPid(tsBuf, i)!== 0) continue;
+    if (!hasPayload(tsBuf, i)) continue;
+    let off = getPayloadOffset(tsBuf, i);
+    const pusi = (tsBuf[i+1] & 0x40)!== 0;
+    if (pusi) {
+      const pointer = tsBuf[i+off];
+      off += 1 + pointer;
+    }
+    if (tsBuf[i+off]!== 0x00) continue; // PAT
+    const secLen = ((tsBuf[i+off+1] & 0x0F) << 8) | tsBuf[i+off+2];
+    for (let p = i+off+8; p+4 <= i+off+3+secLen-4; p+=4) {
+      const prog = (tsBuf[p] << 8) | tsBuf[p+1];
+      const pmtPid = ((tsBuf[p+2] & 0x1F) << 8) | tsBuf[p+3];
+      if (prog!== 0) return pmtPid;
     }
   }
   return null;
 }
 
-function getAudioPidFromPmt(buf, pmtPid) {
-  for (let i = 0; i < buf.length; i += 188) {
-    if (buf[i]!== 0x47) continue;
-    const pid = ((buf[i+1] & 0x1F) << 8) | buf[i+2];
-    if (pid!== pmtPid) continue;
-    const hasAdapt = (buf[i+3] & 0x20) >> 5;
-    let offset = 4;
-    if (hasAdapt) offset += 1 + buf[i+4];
-    const payloadStart = (buf[i+1] & 0x40)? 1 : 0;
-    if (payloadStart) offset += 1 + buf[i+offset];
-    let off = i + offset;
-    if (buf[off]!== 0x02) continue; // table_id PMT
-    const progInfoLen = ((buf[off+10] & 0x0F) << 8) | buf[off+11];
-    let pos = off + 12 + progInfoLen;
-    const end = off + 3 + (((buf[off+1] & 0x0F) << 8) | buf[off+2]) - 4;
-    while (pos + 5 < end) {
-      const streamType = buf[pos];
-      const elemPid = ((buf[pos+1] & 0x1F) << 8) | buf[pos+2];
-      // 0x03, 0x04 = MP3
-      if (streamType === 0x03 || streamType === 0x04) return elemPid;
-      const esLen = ((buf[pos+3] & 0x0F) << 8) | buf[pos+4];
+function findMp3Pid(tsBuf, pmtPid) {
+  for (let i = 0; i + 188 <= tsBuf.length; i += 188) {
+    if (tsBuf[i]!== 0x47) continue;
+    if (getPid(tsBuf, i)!== pmtPid) continue;
+    if (!hasPayload(tsBuf, i)) continue;
+    let off = getPayloadOffset(tsBuf, i);
+    const pusi = (tsBuf[i+1] & 0x40)!== 0;
+    if (pusi) {
+      const pointer = tsBuf[i+off];
+      off += 1 + pointer;
+    }
+    if (tsBuf[i+off]!== 0x02) continue; // PMT
+    const progInfoLen = ((tsBuf[i+off+10] & 0x0F) << 8) | tsBuf[i+off+11];
+    let pos = i+off+12+progInfoLen;
+    const secEnd = i+off+3+ (((tsBuf[i+off+1] & 0x0F) << 8) | tsBuf[i+off+2]) - 4;
+    while (pos + 5 < secEnd) {
+      const streamType = tsBuf[pos];
+      const elemPid = ((tsBuf[pos+1] & 0x1F) << 8) | tsBuf[pos+2];
+      const esLen = ((tsBuf[pos+3] & 0x0F) << 8) | tsBuf[pos+4];
+      if (streamType === 0x03 || streamType === 0x04) return elemPid; // MP3
       pos += 5 + esLen;
     }
   }
   return null;
 }
 
-function extractMp3(buf, audioPid) {
-  let out = [];
-  for (let i = 0; i < buf.length; i += 188) {
-    if (buf[i]!== 0x47) continue;
-    const pid = ((buf[i+1] & 0x1F) << 8) | buf[i+2];
-    if (pid!== audioPid) continue;
-    const hasAdapt = (buf[i+3] & 0x20) >> 5;
-    const hasPayload = (buf[i+3] & 0x10) >> 4;
-    if (!hasPayload) continue;
-    let offset = 4;
-    if (hasAdapt) {
-      const adapLen = buf[i+4];
-      offset += 1 + adapLen;
-    }
-    if (buf[i+1] & 0x40) { // PUSI - có PES header
-      const pesStart = i + offset;
-      if (buf[pesStart] === 0x00 && buf[pesStart+1] === 0x00 && buf[pesStart+2] === 0x01) {
-        const pesHeaderLen = buf[pesStart+8];
-        offset += 9 + pesHeaderLen;
+function extractMp3Payload(tsBuf, audioPid) {
+  const chunks = [];
+  for (let i = 0; i + 188 <= tsBuf.length; i += 188) {
+    if (tsBuf[i]!== 0x47) continue;
+    if (getPid(tsBuf, i)!== audioPid) continue;
+    const off = getPayloadOffset(tsBuf, i);
+    if (off < 0 || off >= 188) continue;
+    if (!hasPayload(tsBuf, i)) continue;
+
+    let payloadOff = i + off;
+    const pusi = (tsBuf[i+1] & 0x40)!== 0;
+    if (pusi) {
+      // PES header: 00 00 01 xx xx xx xx xx xx
+      if (tsBuf[payloadOff] === 0x00 && tsBuf[payloadOff+1] === 0x00 && tsBuf[payloadOff+2] === 0x01) {
+        const pesHeaderLen = tsBuf[payloadOff+8];
+        payloadOff += 9 + pesHeaderLen;
       }
     }
-    const payloadLen = 188 - offset;
-    if (payloadLen > 0) {
-      out.push(buf.subarray(i + offset, i + 188));
+    if (payloadOff < i+188) {
+      chunks.push(tsBuf.subarray(payloadOff, i+188));
     }
   }
-  return Buffer.concat(out);
+  return Buffer.concat(chunks);
 }
 
 export default async function handler(req, res) {
-  const { searchParams } = new URL(req.url, `http://${req.headers.host}`);
-  const city = searchParams.get('ch') || searchParams.get('city') || 'gthcm';
+  const urlObj = new URL(req.url, `http://${req.headers.host}`);
+  const city = urlObj.searchParams.get('ch') || 'gthcm';
   const masterUrl = city === 'gthn'
-   ? "https://play.vovgiaothong.vn/live/gthn/playlist.m3u8"
+  ? "https://play.vovgiaothong.vn/live/gthn/playlist.m3u8"
     : "https://play.vovgiaothong.vn/live/gthcm/playlist.m3u8";
 
   res.writeHead(200, {
     "Content-Type": "audio/mpeg",
-    "Cache-Control": "no-cache, no-store",
+    "Cache-Control": "no-cache",
     "Connection": "keep-alive",
     "Access-Control-Allow-Origin": "*",
-    "Transfer-Encoding": "chunked",
   });
 
   let pmtPid = null;
   let audioPid = null;
   const seen = new Set();
 
-  try {
-    while (true) {
-      if (req.socket.destroyed) break;
+  const abort = () => { try{ res.end(); }catch{} };
+  req.on('close', abort);
 
-      const masterRes = await fetch(masterUrl, { headers: { "Referer": "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } });
-      const masterText = await masterRes.text();
-      const subPath = masterText.split('\n').find(l => l.trim() &&!l.startsWith('#') && l.includes('.m3u8'));
-      if (!subPath) continue;
-      const subUrl = subPath.trim().startsWith('http')? subPath.trim() : new URL(subPath.trim(), masterUrl).toString();
+  while (!req.socket.destroyed) {
+    try {
+      const masterText = await fetch(masterUrl, { headers: { Referer: "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } }).then(r=>r.text());
+      const subLine = masterText.split('\n').find(l=>l.trim() &&!l.trim().startsWith('#') && l.includes('.m3u8'));
+      if (!subLine) { await new Promise(r=>setTimeout(r,1000)); continue; }
+      const subUrl = subLine.trim().startsWith('http')? subLine.trim() : new URL(subLine.trim(), masterUrl).toString();
 
-      const subRes = await fetch(subUrl, { headers: { "Referer": "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } });
-      const subText = await subRes.text();
-      const base = subUrl.substring(0, subUrl.lastIndexOf('/') + 1);
-      const tsList = subText.split('\n').map(l=>l.trim()).filter(l=>l &&!l.startsWith('#') && l.includes('.ts')).map(l=> l.startsWith('http')? l : base + l);
+      const subText = await fetch(subUrl, { headers: { Referer: "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } }).then(r=>r.text());
+      const base = subUrl.slice(0, subUrl.lastIndexOf('/')+1);
+      const tsUrls = subText.split('\n').map(s=>s.trim()).filter(s=>s &&!s.startsWith('#') && s.includes('.ts')).map(s=> s.startsWith('http')? s : base+s);
 
-      for (const tsUrl of tsList) {
+      for (const tsUrl of tsUrls) {
         if (seen.has(tsUrl)) continue;
-        seen.add(tsUrl);
-        if (seen.size > 20) seen.delete([...seen][0]);
+        const tsBuf = Buffer.from(await fetch(tsUrl, { headers: { Referer: "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } }).then(r=>r.arrayBuffer()));
 
-        const tsRes = await fetch(tsUrl, { headers: { "Referer": "https://vovgiaothong.vn/", "User-Agent": "Mozilla/5.0" } });
-        const ab = await tsRes.arrayBuffer();
-        const buf = Buffer.from(ab);
-
-        if (!pmtPid) pmtPid = getPmtPidFromPat(buf);
-        if (pmtPid &&!audioPid) audioPid = getAudioPidFromPmt(buf, pmtPid);
+        if (!pmtPid) pmtPid = findPmtPid(tsBuf);
+        if (pmtPid &&!audioPid) audioPid = findMp3Pid(tsBuf, pmtPid);
         if (!audioPid) continue;
 
-        const mp3 = extractMp3(buf, audioPid);
-        if (mp3.length > 0) {
+        const mp3 = extractMp3Payload(tsBuf, audioPid);
+        // lọc bỏ gói không có sync MP3 để tránh nhiễu
+        if (mp3.length > 100 && mp3.includes(0xFF)) {
           res.write(mp3);
+          seen.add(tsUrl);
         }
+        if (seen.size > 30) seen.delete([...seen][0]);
       }
-      await new Promise(r => setTimeout(r, 1500));
-    }
-  } catch(e) {
-    console.error(e);
-  } finally {
-    res.end();
+    } catch(e){ console.error(e); }
+    await new Promise(r=>setTimeout(r, 1200));
   }
 }
