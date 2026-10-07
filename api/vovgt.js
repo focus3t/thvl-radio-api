@@ -41,7 +41,8 @@ export default async function handler(req, res) {
     if (l && !l.startsWith("#")) {
       if (!l.startsWith("http")) l = base + l;
       // /api/vovgt-ts?u=encodeURIComponent(tsUrl)
-      return `/api/vovgt-ts?u=${encodeURIComponent(l)}`;
+      //return `/api/vovgt-ts?u=${encodeURIComponent(l)}`;
+      return `/api/vovgt-ts.ts?u=${encodeURIComponent(l)}`;
     }
     return line;
   }).join("\n");
