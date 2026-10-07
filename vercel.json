@@ -1,3 +1,6 @@
 {
-  "version": 2
+  "version": 2,
+  "functions": {
+    "api/vovgt-mp3.js": { "maxDuration": 60 }
+  }
 }
